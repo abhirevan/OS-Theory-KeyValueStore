@@ -13,12 +13,12 @@ help:
 all: library checkpoint1_test kvstore_test checkpoint_userinput1_test
 
 kvstore_test: kvstore_test.c kvstore.c kvstore.h 
-	$(CC) $(CFLAGS) kvstore_test.c -o kvstore_test -L../key-val-store -lkvstorelib
+	$(CC) $(CFLAGS) kvstore_test.c -o kvstore_test -L../OS-Theory-KeyValueStore -lkvstorelib
 checkpoint1_test: checkpoint1_test.c kvstore.c kvstore.h
-	$(CC) $(CFLAGS) checkpoint1_test.c -o checkpoint1_test -L../key-val-store -lkvstorelib
+	$(CC) $(CFLAGS) checkpoint1_test.c -o checkpoint1_test -L../OS-Theory-KeyValueStore -lkvstorelib
 
 checkpoint_userinput1_test: checkpoint_userinput1_test.c kvstore.c kvstore.h
-	$(CC) $(CFLAGS) checkpoint_userinput1_test.c -o checkpoint_userinput1_test -L../key-val-store -lkvstorelib
+	$(CC) $(CFLAGS) checkpoint_userinput1_test.c -o checkpoint_userinput1_test -L../OS-Theory-KeyValueStore -lkvstorelib
 
 library: kvstore.c kvstore.h 
 	$(CC) -c kvstore.c kvstore.h -I./
