@@ -6,4 +6,4 @@
 /kvstore_test
 /libkvstorelib.a
 /*.h.gch
-
+/*.o
