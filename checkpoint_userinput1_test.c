@@ -62,7 +62,6 @@ int main(int argc, char *argv[]) {
 	input = (char *) malloc(val);
 	memset(input, '\0', val);
 	memset(input, 'x', val - 1);
-	//printf("Value generated: %s\n", str);
 
 	printf("SIZE operation before inserting key: %d return size: %d\n", key,
 			size(&key));
@@ -79,7 +78,7 @@ int main(int argc, char *argv[]) {
 
 	//allocate result string
 	result = (char *) malloc(sz);
-	status = get(&key, result, sz);
+	status = get(&key, result, val);
 	printf("GET operation on key: %d returns status: %d\n", key, status);
 	if (!status) {
 		print_failure(3);

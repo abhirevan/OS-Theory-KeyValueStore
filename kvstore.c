@@ -10,6 +10,8 @@
 #include<malloc.h>
 #include<string.h>
 #include "kvstore.h"
+#include <glib.h>
+#include <stdlib.h>
 
 /*********************************************************************
  * Constants
@@ -44,11 +46,17 @@ int first_time_flag = 0;
  * valueset_t tuple -> file, blocknumber ,size
  */
 typedef struct valuetuple {
+	int key;
 	int data_fd;
 	int n_block;
 	int size;
 } valuetuple_t;
 valuetuple_t *temp_tuple;
+/*
+ * Variable to check if inmemory hash table is loaded for mapping file
+ */
+int hash_table_flag = 0;
+GHashTable *ht;
 /*********************************************************************
  * Helper functions
  ********************************************************************/
@@ -57,6 +65,27 @@ int fileExists(const char *filename) {
 	if (fp != NULL)
 		fclose(fp);
 	return (fp != NULL);
+}
+void load_hash_table() {
+	//Initialize the hash table
+	ht = g_hash_table_new(g_int_hash, g_int_equal);
+	int n_mappings = 0;
+	//Key Value for the HT
+	gint *key = g_new(gint, 1);
+	gint *value = g_new(gint, 1);
+	fseek(fd_kvstore_meta, MAX_BLOCKS * 4, SEEK_SET);
+	fread(&n_mappings, sizeof(int), 1, fd_kvstore_meta);
+	int i;
+	fseek(fd_kvstore_mapping, 0, SEEK_SET);
+	for (i = 0; i < n_mappings; i++) {
+		fread(temp_tuple, sizeof(valuetuple_t), 1, fd_kvstore_mapping);
+		*key = temp_tuple->key;
+		*value = i;
+		if (*key != -1) {
+			g_hash_table_replace(ht, key, value);
+		}
+		memset(temp_tuple, '\0', sizeof(valuetuple_t));
+	}
 }
 void open_kvstore_files() {
 	//check if running for the first time
@@ -81,14 +110,20 @@ void open_kvstore_files() {
 		fd_kvstore_meta = fopen(KVSTORE_METADATA_FILE, "w+");
 		fd_kvstore_mapping = fopen(KVSTORE_MAPPING_FILE, "w+");
 		first_time_flag = 1;
-		//Write init KVSTORE_METADATA_FILE
+		//Write init KVSTORE_METADATA_FILE + count of mappings
 		int temp = 0;
 		fseek(fd_kvstore_meta, 0, SEEK_SET);
-		fwrite(&temp, sizeof(int), 1024 * 4, fd_kvstore_meta);
+		fwrite(&temp, sizeof(int), MAX_BLOCKS * 4, fd_kvstore_meta);
+		fwrite(&temp, sizeof(int), 1, fd_kvstore_meta);
 	}
 	//Allocate temp tuple
 	temp_tuple = (valuetuple_t *) malloc(sizeof(valuetuple_t));
 	memset(temp_tuple, '\0', sizeof(valuetuple_t));
+	//Load the persistant mappings to memory if not already done so
+	if (!hash_table_flag) {
+		load_hash_table();
+		hash_table_flag = 1;
+	}
 }
 void close_kvstore_files() {
 	free(temp_tuple);
@@ -144,12 +179,24 @@ int find_first_free_data_block( data_block_type) {
  */
 int size(void* keyPtr) {
 	int sizeval;
+	//Key Value for the HT
+	gint *key = g_new(gint, 1);
+	gint *value = g_new(gint, 1);
 	open_kvstore_files();
-	if (first_time_flag)
+	if (first_time_flag) {
+		close_kvstore_files();
 		return 0;
-	else {
-		fseek(fd_kvstore_mapping, (*((int *) keyPtr)) * (sizeof(valuetuple_t)),
-				SEEK_SET);
+	} else {
+		*key = *((int*) keyPtr);
+		if (g_hash_table_lookup(ht, key) == NULL) {
+			close_kvstore_files();
+			return 0;
+		} else {
+			value = g_hash_table_lookup(ht, key);
+		}
+
+		printf("key:%d offset:%d\n", *key, *value);
+		fseek(fd_kvstore_mapping, (*value) * (sizeof(valuetuple_t)), SEEK_SET);
 		fread(temp_tuple, sizeof(valuetuple_t), 1, fd_kvstore_mapping);
 		sizeval = temp_tuple->size;
 	}
@@ -164,6 +211,10 @@ int size(void* keyPtr) {
  */
 int put(void* keyPtr, void* valPtr, int size) {
 	int data_block_type = determine_data_block_type(size);
+	//Key Value for the HT
+	gint *key = g_new(gint, 1);
+	gint *value = g_new(gint, 1);
+	*key = *((int*) keyPtr);
 	//Invalid size
 	if (data_block_type == -1) {
 		return 0;
@@ -173,6 +224,7 @@ int put(void* keyPtr, void* valPtr, int size) {
 	int block_num = find_first_free_data_block(data_block_type);
 	//Free block not found
 	if (block_num == -1) {
+		close_kvstore_files();
 		return 0;
 	}
 	//Update DATAFILE*
@@ -182,13 +234,30 @@ int put(void* keyPtr, void* valPtr, int size) {
 	fseek(fd_kvstore_meta, BV_DATA_BLOCK_OFFSET[data_block_type] * block_num,
 			SEEK_SET);
 	int temp = 1;
+	int offset;
 	fwrite(&temp, sizeof(int), 1, fd_kvstore_meta);
+	//void* result = g_hash_table_lookup(ht, &key);
+	if (g_hash_table_lookup(ht, key) == NULL) {
+		//Insert new entry at HT
+		//Get size of KVSTORE_MAPPING_FILE
+		fseek(fd_kvstore_meta, MAX_BLOCKS * 4, SEEK_SET);
+		fread(&offset, sizeof(int), 1, fd_kvstore_meta);
+		*value = offset;
+		g_hash_table_replace(ht, key, value);
+		int new_offset = offset + 1;
+		fseek(fd_kvstore_meta, MAX_BLOCKS * 4, SEEK_SET);
+		fwrite(&new_offset, sizeof(int), 1, fd_kvstore_meta);
+	} else {
+		value = g_hash_table_lookup(ht, key);
+	}
+
+	printf("key:%d offset:%d\n", *key, *value);
 	//Update KVSTORE_MAPPING_FILE
 	temp_tuple->data_fd = data_block_type;
 	temp_tuple->n_block = block_num;
 	temp_tuple->size = size;
-	fseek(fd_kvstore_mapping, (*((int *) keyPtr)) * (sizeof(valuetuple_t)),
-			SEEK_SET);
+	temp_tuple->key = *key;
+	fseek(fd_kvstore_mapping, ((*value) * sizeof(valuetuple_t)), SEEK_SET);
 	fwrite(temp_tuple, sizeof(valuetuple_t), 1, fd_kvstore_mapping);
 	close_kvstore_files();
 	return 1;
@@ -198,16 +267,21 @@ int put(void* keyPtr, void* valPtr, int size) {
  */
 int get(void* keyPtr, void* valPtr, int buffer_size) {
 	int sizeval = size(keyPtr);
-	//Exit if key not found or the value size is greater than buffer size
+	//Key Value for the HT
+	gint *key = g_new(gint, 1);
+	gint *value = g_new(gint, 1);
+	*key = *((int*) keyPtr);
+//Exit if key not found or the value size is greater than buffer size
 	if (sizeval == 0 || sizeval > buffer_size) {
 		return 0;
 	}
 	open_kvstore_files();
-	//get tuple value using key from KVSTORE_MAPPING_FILE
-	fseek(fd_kvstore_mapping, (*((int *) keyPtr)) * (sizeof(valuetuple_t)),
-			SEEK_SET);
+//get tuple value using key from KVSTORE_MAPPING_FILE
+	value = g_hash_table_lookup(ht, key);
+	printf("key:%d offset:%d\n", *key, *value);
+	fseek(fd_kvstore_mapping, ((*value) * sizeof(valuetuple_t)), SEEK_SET);
 	fread(temp_tuple, sizeof(valuetuple_t), 1, fd_kvstore_mapping);
-	//Update the buffer from the data file
+//Update the buffer from the data file
 	FILE *fd = get_data_fd_type(temp_tuple->data_fd);
 	fseek(fd,
 			DATA_BLOCK_TYPE_SIZE[(temp_tuple->data_fd)] * (temp_tuple->n_block),
@@ -221,23 +295,31 @@ int get(void* keyPtr, void* valPtr, int buffer_size) {
  */
 int delete(void* keyPtr) {
 	int sizeval = size(keyPtr);
+	//Key Value for the HT
+	gint *key = g_new(gint, 1);
+	gint *value = g_new(gint, 1);
+	*key = *((int*) keyPtr);
 	//Exit if key not found
 	if (sizeval == 0) {
 		return 0;
 	}
 	open_kvstore_files();
 	//First get the value tuple from KVSTORE_MAPPING_FILE
-	fseek(fd_kvstore_mapping, (*((int *) keyPtr)) * (sizeof(valuetuple_t)),
-			SEEK_SET);
+	value = g_hash_table_lookup(ht, key);
+	printf("key:%d offset:%d\n", *key, *value);
+	fseek(fd_kvstore_mapping, ((*value) * sizeof(valuetuple_t)), SEEK_SET);
 	fread(temp_tuple, sizeof(valuetuple_t), 1, fd_kvstore_mapping);
+
 	int data_block_type = temp_tuple->data_fd;
 	int block_num = temp_tuple->n_block;
 
-	//Delete key value tuple in KVSTORE_MAPPING_FILE by overwriting zeroes
-	memset(temp_tuple, '\0', sizeof(valuetuple_t));
-	fseek(fd_kvstore_mapping, (*((int *) keyPtr)) * (sizeof(valuetuple_t)),
-			SEEK_SET);
-	fwrite(temp_tuple, sizeof(valuetuple_t), 1, fd_kvstore_mapping);
+	//Delete key value tuple in KVSTORE_MAPPING_FILE by overwriting key as -1
+	temp_tuple->key = -1;
+	fseek(fd_kvstore_mapping, ((*value) * sizeof(valuetuple_t)), SEEK_SET);
+	fread(temp_tuple, sizeof(valuetuple_t), 1, fd_kvstore_mapping);
+	//and updating the hash table
+	g_hash_table_remove(ht, key);
+
 	//Update KVSTORE_METADATA_FILE with free block
 	FILE *fd = get_data_fd_type(data_block_type);
 	fseek(fd_kvstore_meta, BV_DATA_BLOCK_OFFSET[data_block_type] * block_num,
